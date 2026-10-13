@@ -3,38 +3,79 @@ import bcrypt from "bcryptjs";
 import { NextResponse } from "next/server";
 import { signToken, COOKIE_NAME } from "@/lib/auth";
 
+export const runtime = "nodejs";
+
 export async function POST(request) {
   try {
-    const { username, password } = await request.json();
+    // Membaca data login
+    const body = await request.json();
+    const username = String(body.username ?? "").trim();
+    const password = String(body.password ?? "");
 
+    // Validasi input
     if (!username || !password) {
       return NextResponse.json(
-        { ok: false, error: "Username dan password wajib diisi." },
+        {
+          ok: false,
+          error: "Username dan password wajib diisi.",
+        },
         { status: 400 }
       );
     }
 
-    const [rows] = await pool.query(
-      "SELECT id, nama, username, password, role, is_active FROM users WHERE username = ? LIMIT 1",
-      [String(username).trim()]
+    // Memastikan koneksi database tersedia
+    const [rows] = await pool.execute(
+      `SELECT id, nama, username, password, role, is_active
+       FROM users
+       WHERE username = ?
+       LIMIT 1`,
+      [username]
     );
+
     const user = rows[0];
 
-    const passwordCocok = user && (await bcrypt.compare(password, user.password));
-    if (!passwordCocok) {
+    // Memeriksa username dan password
+    if (!user) {
       return NextResponse.json(
-        { ok: false, error: "Username atau password salah." },
+        {
+          ok: false,
+          error: "Username atau password salah.",
+        },
         { status: 401 }
       );
     }
 
-    if (!user.is_active) {
+    const passwordCocok = await bcrypt.compare(
+      password,
+      user.password
+    );
+
+    if (!passwordCocok) {
       return NextResponse.json(
-        { ok: false, error: "Akun nonaktif. Hubungi admin." },
+        {
+          ok: false,
+          error: "Username atau password salah.",
+        },
+        { status: 401 }
+      );
+    }
+
+    // Memeriksa status akun
+    if (
+      user.is_active === 0 ||
+      user.is_active === false ||
+      user.is_active === "0"
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Akun nonaktif. Hubungi admin.",
+        },
         { status: 403 }
       );
     }
 
+    // Membuat token autentikasi
     const token = await signToken({
       id: user.id,
       nama: user.nama,
@@ -42,16 +83,36 @@ export async function POST(request) {
       role: user.role,
     });
 
-    const res = NextResponse.json({ ok: true, role: user.role, nama: user.nama });
-    res.cookies.set(COOKIE_NAME, token, {
+    // Mengirim respons dan cookie login
+    const response = NextResponse.json({
+      ok: true,
+      role: user.role,
+      nama: user.nama,
+    });
+
+    response.cookies.set(COOKIE_NAME, token, {
       httpOnly: true,
-      sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
       path: "/",
       maxAge: 60 * 60 * 8,
     });
-    return res;
-  } catch (err) {
-    return NextResponse.json({ ok: false, error: "Terjadi kesalahan server." }, { status: 500 });
+
+    return response;
+  } catch (error) {
+    // Catat error asli di Vercel Runtime Logs
+    console.error("[LOGIN ERROR]", {
+      message: error?.message,
+      code: error?.code,
+      stack: error?.stack,
+    });
+
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Terjadi kesalahan server.",
+      },
+      { status: 500 }
+    );
   }
 }
